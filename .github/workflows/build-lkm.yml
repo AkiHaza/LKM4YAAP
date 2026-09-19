@@ -1,0 +1,373 @@
+name: Build YAAP KernelSU LKM
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag, or auto for UTC date plus run number
+        required: false
+        default: auto
+        type: string
+      publish_release:
+        description: Publish the .ko files as a GitHub release
+        required: false
+        default: true
+        type: boolean
+      module_sig_protect:
+        description: Keep CONFIG_MODULE_SIG_PROTECT from YAAP (use n for unsigned LKM)
+        required: false
+        default: n
+        type: choice
+        options:
+          - n
+          - y
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-yaap-lkm-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  ARCH: arm64
+  KERNEL_REPO: https://github.com/AkiHaza/android_kernel_oneplus_sm8650.git
+  KERNEL_REF: seventeen
+  MODULES_REPO: https://github.com/AkiHaza/android_kernel_oneplus_sm8650-modules.git
+  MODULES_REF: seventeen
+  TOOLCHAIN_URL: https://github.com/AkiHaza/Floran-Kernel/releases/download/toolchain-r596125/linux-x86-refs_heads_android17-release-clang-r596125.tar.gz
+  KSU_REF: main
+  KSU_NEXT_REF: dev
+  RESUKISU_REF: main
+  BACKSLASHXX_REF: master
+
+jobs:
+  build:
+    name: Build four YAAP LKM variants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Setup swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 16
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libdw-dev libelf-dev libssl-dev pahole \
+            binutils cpio kmod lz4 rsync python3 python3-pip git jq xz-utils
+
+      - name: Download YAAP clang-r596125
+        run: |
+          set -euxo pipefail
+          mkdir -p "$RUNNER_TEMP/toolchain"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "$TOOLCHAIN_URL" -o "$RUNNER_TEMP/clang.tar.gz"
+          tar -xzf "$RUNNER_TEMP/clang.tar.gz" -C "$RUNNER_TEMP/toolchain"
+          clang_bin="$(find "$RUNNER_TEMP/toolchain" -path '*/bin/clang' \( -type f -o -type l \) -print -quit)"
+          test -n "$clang_bin" -a -x "$clang_bin"
+          dirname "$clang_bin" >> "$GITHUB_PATH"
+          echo "CLANG_BIN=$(dirname "$clang_bin")" >> "$GITHUB_ENV"
+          "$clang_bin" --version
+
+      - name: Resolve release metadata
+        id: metadata
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euxo pipefail
+          if [ -z "$REQUESTED_TAG" ] || [ "$REQUESTED_TAG" = auto ]; then
+            tag="$(date -u +%F)-${GITHUB_RUN_NUMBER}"
+          else
+            tag="$REQUESTED_TAG"
+          fi
+          case "$tag" in
+            *[!A-Za-z0-9._-]*) echo "Invalid release tag: $tag" >&2; exit 1;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clone YAAP kernel and modules
+        env:
+          KERNEL_DIR: ${{ runner.temp }}/sm8650
+          MODULES_DIR: ${{ runner.temp }}/sm8650-modules
+        run: |
+          set -euxo pipefail
+          clone_latest() {
+            local repo="$1" ref="$2" dir="$3"
+            local expected_sha
+            expected_sha="$(git ls-remote --exit-code "$repo" "refs/heads/$ref" | awk 'NR == 1 { print $1 }')"
+            test -n "$expected_sha"
+            git clone --filter=blob:none --no-tags --depth=1 --single-branch \
+              --branch "$ref" "$repo" "$dir"
+            test "$(git -C "$dir" rev-parse HEAD)" = "$expected_sha"
+          }
+          clone_latest "$KERNEL_REPO" "$KERNEL_REF" "$KERNEL_DIR"
+          clone_latest "$MODULES_REPO" "$MODULES_REF" "$MODULES_DIR"
+
+          kernel_commit="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
+          modules_commit="$(git -C "$MODULES_DIR" rev-parse HEAD)"
+          echo "KERNEL_COMMIT=$kernel_commit" >> "$GITHUB_ENV"
+          echo "MODULES_COMMIT=$modules_commit" >> "$GITHUB_ENV"
+
+          touchpanel_link="$KERNEL_DIR/drivers/base/touchpanel_notify"
+          test -L "$touchpanel_link"
+          test "$(readlink "$touchpanel_link")" = \
+            "../../../sm8650-modules/oplus/kernel/touchpanel/touchpanel_notify"
+          test -f "$touchpanel_link/Kconfig"
+          test -f "$touchpanel_link/Makefile"
+          echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
+          echo "MODULES_DIR=$MODULES_DIR" >> "$GITHUB_ENV"
+          {
+            echo "### Source revisions"
+            echo "- kernel ($KERNEL_REF): \`$kernel_commit\`"
+            echo "- modules ($MODULES_REF): \`$modules_commit\`"
+            echo "- touchpanel source: \`$(readlink "$touchpanel_link")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clone latest KSU sources
+        env:
+          KSU_ROOT: ${{ runner.temp }}/ksu-sources
+        run: |
+          set -euxo pipefail
+          mkdir -p "$KSU_ROOT"
+          clone_latest() {
+            local repo="$1" ref="$2" dir="$3"
+            local expected_sha
+            expected_sha="$(git ls-remote --exit-code "$repo" "refs/heads/$ref" | awk 'NR == 1 { print $1 }')"
+            test -n "$expected_sha"
+            git clone --filter=blob:none --no-tags --depth=1 --single-branch \
+              --branch "$ref" "$repo" "$dir"
+            test "$(git -C "$dir" rev-parse HEAD)" = "$expected_sha"
+          }
+          clone_latest https://github.com/tiann/KernelSU.git "$KSU_REF" "$KSU_ROOT/kernelsu"
+          clone_latest https://github.com/KernelSU-Next/KernelSU-Next.git "$KSU_NEXT_REF" "$KSU_ROOT/kernelsu-next"
+          clone_latest https://github.com/ReSukiSU/ReSukiSU.git "$RESUKISU_REF" "$KSU_ROOT/resukisu"
+          clone_latest https://github.com/backslashxx/KernelSU.git "$BACKSLASHXX_REF" "$KSU_ROOT/backslashxx"
+          # ReSukiSU derives its version from git history and unshallows itself in Kbuild.
+          git -C "$KSU_ROOT/resukisu" fetch --unshallow
+          echo "KSU_COMMIT=$(git -C "$KSU_ROOT/kernelsu" rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "KSU_NEXT_COMMIT=$(git -C "$KSU_ROOT/kernelsu-next" rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "RESUKISU_COMMIT=$(git -C "$KSU_ROOT/resukisu" rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "BACKSLASHXX_COMMIT=$(git -C "$KSU_ROOT/backslashxx" rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "KSU_ROOT=$KSU_ROOT" >> "$GITHUB_ENV"
+
+      - name: Prepare YAAP kernel configuration
+        env:
+          MODULE_SIG_PROTECT: ${{ inputs.module_sig_protect }}
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+
+          path = Path(os.environ["KERNEL_DIR"]) / "certs/extract-cert.c"
+          text = path.read_text()
+          guarded_decl = """#ifdef USE_PKCS11_ENGINE
+          static const char *key_pass;
+          #endif"""
+          guarded_assignment = """#ifdef USE_PKCS11_ENGINE
+          \tkey_pass = getenv("KBUILD_SIGN_PIN");
+          #endif"""
+          declaration = "static const char *key_pass;"
+          assignment = '\tkey_pass = getenv("KBUILD_SIGN_PIN");'
+
+          if guarded_decl in text and guarded_assignment in text:
+              text = text.replace(guarded_decl, declaration, 1)
+              text = text.replace(guarded_assignment, assignment, 1)
+              path.write_text(text)
+          elif not (guarded_decl in text or guarded_assignment in text) \
+                  and declaration in text and assignment in text:
+              pass
+          else:
+              raise SystemExit("Unsupported extract-cert.c key_pass layout")
+          PY
+          echo 'Applied YAAP extract-cert key_pass compatibility fix.' >> "$GITHUB_STEP_SUMMARY"
+          modpost="$KERNEL_DIR/scripts/mod/modpost.c"
+          test -f "$modpost"
+          if grep -Fq 'if (fnmatch("*kernelsu", mod->name, 0))' "$modpost"; then
+            sed -i 's/if (fnmatch("\*kernelsu", mod->name, 0))/if (fnmatch("*kernelsu", mod->name, 0) \&\& fnmatch("*ksu", mod->name, 0))/' "$modpost"
+          fi
+          grep -Fq 'if (fnmatch("*kernelsu", mod->name, 0) && fnmatch("*ksu", mod->name, 0))' "$modpost"
+          if grep -q '__version_ext_names") = $' "$modpost"; then
+            sed -i 's/__version_ext_names") =$/__version_ext_names") = ""/' "$modpost"
+          fi
+          echo 'Applied KSU-specific modpost handling for YAAP LKMs.' >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p "$RUNNER_TEMP/yaap-out"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 gki_defconfig
+          KCONFIG_CONFIG="$RUNNER_TEMP/yaap-out/.config" \
+            "$KERNEL_DIR/scripts/kconfig/merge_config.sh" -m -r -y \
+            "$RUNNER_TEMP/yaap-out/.config" \
+            "$KERNEL_DIR/arch/arm64/configs/vendor/pineapple_GKI.config" \
+            "$KERNEL_DIR/arch/arm64/configs/vendor/oplus/pineapple_GKI.config"
+          if [ "$MODULE_SIG_PROTECT" = n ]; then
+            "$KERNEL_DIR/scripts/config" --file "$RUNNER_TEMP/yaap-out/.config" \
+              --disable MODULE_SIG_PROTECT
+          fi
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 olddefconfig
+          for symbol in MODULES KALLSYMS KALLSYMS_ALL; do
+            grep -q "^CONFIG_${symbol}=y$" "$RUNNER_TEMP/yaap-out/.config" || {
+              echo "CONFIG_${symbol}=y is required for an LKM build" >&2
+              exit 1
+            }
+          done
+          if grep -q '^CONFIG_TRIM_UNUSED_KSYMS=y$' "$RUNNER_TEMP/yaap-out/.config"; then
+            echo 'CONFIG_TRIM_UNUSED_KSYMS=y is incompatible with a standalone KernelSU LKM' >&2
+            exit 1
+          fi
+          grep -E '^(CONFIG_(KPROBES|JUMP_LABEL|MODULES|MODULE_UNLOAD|MODVERSIONS|MODULE_SIG|MODULE_SIG_PROTECT|KALLSYMS|KALLSYMS_ALL|TRIM_UNUSED_KSYMS|CFI_CLANG|LTO_CLANG_THIN|DEBUG_INFO_BTF|EXT4_FS|SECURITY_SELINUX|SECCOMP))=' \
+            "$RUNNER_TEMP/yaap-out/.config" | tee "$RUNNER_TEMP/yaap-config.txt"
+
+      - name: Build YAAP kernel symbols
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 -j"$(nproc)" Image modules
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 modules_prepare
+          test -s "$RUNNER_TEMP/yaap-out/Module.symvers"
+          test -s "$RUNNER_TEMP/yaap-out/vmlinux"
+          test -s "$RUNNER_TEMP/yaap-out/include/config/kernel.release"
+          test -s "$RUNNER_TEMP/yaap-out/include/config/auto.conf"
+
+      - name: Build official KernelSU LKM
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 M="$KSU_ROOT/kernelsu/kernel" \
+            src="$KSU_ROOT/kernelsu/kernel" CONFIG_KSU=m modules
+          test -s "$KSU_ROOT/kernelsu/kernel/kernelsu.ko"
+          cp "$KSU_ROOT/kernelsu/kernel/kernelsu.ko" "$RUNNER_TEMP/kernelsu.ko"
+
+      - name: Build KernelSU-Next LKM
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 M="$KSU_ROOT/kernelsu-next/kernel" \
+            src="$KSU_ROOT/kernelsu-next/kernel" CONFIG_KSU=m modules
+          test -s "$KSU_ROOT/kernelsu-next/kernel/kernelsu.ko"
+          cp "$KSU_ROOT/kernelsu-next/kernel/kernelsu.ko" "$RUNNER_TEMP/kernelsu_next.ko"
+
+      - name: Build ReSukiSU LKM
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 M="$KSU_ROOT/resukisu/kernel" \
+            src="$KSU_ROOT/resukisu/kernel" CONFIG_KSU=m \
+            CONFIG_KSU_TRACEPOINT_HOOK=y CONFIG_KSU_MANUAL_HOOK=n \
+            CONFIG_KSU_MULTI_MANAGER_SUPPORT=y \
+            CONFIG_KSU_SUSFS=n modules
+          test -s "$KSU_ROOT/resukisu/kernel/kernelsu.ko"
+          cp "$KSU_ROOT/resukisu/kernel/kernelsu.ko" "$RUNNER_TEMP/resukisu.ko"
+
+      - name: Build backslashxx KernelSU LKM
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 M="$KSU_ROOT/backslashxx/kernel" \
+            src="$KSU_ROOT/backslashxx/kernel" CONFIG_KSU=m modules
+          test -s "$KSU_ROOT/backslashxx/kernel/ksu.ko"
+          cp "$KSU_ROOT/backslashxx/kernel/ksu.ko" "$RUNNER_TEMP/backslashxx.ko"
+
+      - name: Validate and package LKM files
+        env:
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          MODULE_SIG_PROTECT: ${{ inputs.module_sig_protect }}
+        run: |
+          set -euxo pipefail
+          export PATH="$CLANG_BIN:$PATH"
+          package="$RUNNER_TEMP/package"
+          mkdir -p "$package"
+          cp "$RUNNER_TEMP/kernelsu.ko" "$package/kernelsu.ko"
+          cp "$RUNNER_TEMP/kernelsu_next.ko" "$package/kernelsu_next.ko"
+          cp "$RUNNER_TEMP/resukisu.ko" "$package/resukisu.ko"
+          cp "$RUNNER_TEMP/backslashxx.ko" "$package/backslashxx.ko"
+          kernel_release="$(cat "$RUNNER_TEMP/yaap-out/include/config/kernel.release")"
+          for ko in "$package"/*.ko; do
+            test -s "$ko"
+            test "$(readelf -h "$ko" | awk -F: '/Machine:/ {gsub(/^[[:space:]]+/, "", $2); print $2}')" = AArch64
+            vermagic="$(modinfo -F vermagic "$ko")"
+            case "$vermagic" in
+              "$kernel_release"*) ;;
+              *) echo "vermagic mismatch for $ko: $vermagic (kernel $kernel_release)" >&2; exit 1;;
+            esac
+            if grep -q '^CONFIG_MODVERSIONS=y$' "$RUNNER_TEMP/yaap-out/.config"; then
+              readelf -S "$ko" | grep -q '\[ *[0-9][0-9]*\][[:space:]]\+__versions' || {
+                echo "missing __versions section in $ko" >&2
+                exit 1
+              }
+            fi
+            modinfo "$ko" > "$ko.modinfo"
+          done
+          {
+            echo "YAAP LKM build: $RELEASE_TAG"
+            echo "Kernel release: $kernel_release"
+            echo "CONFIG_MODULE_SIG_PROTECT: $MODULE_SIG_PROTECT"
+            echo
+            echo "Modules:"
+            for ko in "$package"/*.ko; do
+              echo "- $(basename "$ko"): $(modinfo -F vermagic "$ko")"
+            done
+          } > "$package/README.txt"
+          sha256sum "$package"/*.ko > "$package/SHA256SUMS"
+          jq -n \
+            --arg tag "$RELEASE_TAG" \
+            --arg kernel_repo "$KERNEL_REPO" \
+            --arg kernel_ref "$KERNEL_REF" \
+            --arg kernel_commit "$KERNEL_COMMIT" \
+            --arg modules_repo "$MODULES_REPO" \
+            --arg modules_ref "$MODULES_REF" \
+            --arg modules_commit "$MODULES_COMMIT" \
+            --arg toolchain "$TOOLCHAIN_URL" \
+            --arg module_sig_protect "$MODULE_SIG_PROTECT" \
+            --arg kernel_release "$kernel_release" \
+            --arg ksu_ref "$KSU_REF" \
+            --arg ksu_commit "$KSU_COMMIT" \
+            --arg ksu_next_ref "$KSU_NEXT_REF" \
+            --arg ksu_next_commit "$KSU_NEXT_COMMIT" \
+            --arg resukisu_ref "$RESUKISU_REF" \
+            --arg resukisu_commit "$RESUKISU_COMMIT" \
+            --arg backslashxx_ref "$BACKSLASHXX_REF" \
+            --arg backslashxx_commit "$BACKSLASHXX_COMMIT" \
+            --argjson variants '["kernelsu", "kernelsu_next", "resukisu", "backslashxx"]' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, modpost_lkm_patch:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
+            > "$package/manifest.json"
+          cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
+          printf 'Package contents:\n'
+          find "$package" -maxdepth 1 -type f -printf '%f\n' | sort
+          cat "$package/SHA256SUMS"
+          echo "PACKAGE_DIR=$package" >> "$GITHUB_ENV"
+
+      - name: Upload LKM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yaap-lkm-${{ steps.metadata.outputs.tag }}
+          path: ${{ runner.temp }}/package
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub release
+        if: ${{ inputs.publish_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.metadata.outputs.tag }}
+          name: YAAP KernelSU LKM ${{ steps.metadata.outputs.tag }}
+          body_path: ${{ runner.temp }}/package/README.txt
+          files: |
+            ${{ runner.temp }}/package/*.ko
+            ${{ runner.temp }}/package/SHA256SUMS
+            ${{ runner.temp }}/package/manifest.json
+            ${{ runner.temp }}/package/yaap-config.txt
+          fail_on_unmatched_files: true

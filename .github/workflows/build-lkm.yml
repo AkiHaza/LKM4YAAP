@@ -191,13 +191,17 @@ jobs:
           modpost="$KERNEL_DIR/scripts/mod/modpost.c"
           test -f "$modpost"
           if grep -Fq 'if (fnmatch("*kernelsu", mod->name, 0))' "$modpost"; then
-            sed -i 's/if (fnmatch("\*kernelsu", mod->name, 0))/if (fnmatch("*kernelsu", mod->name, 0) \&\& fnmatch("*ksu", mod->name, 0))/' "$modpost"
+            sed -i '/^[[:space:]]*if (fnmatch("\*kernelsu", mod->name, 0))$/d' "$modpost"
           fi
-          grep -Fq 'if (fnmatch("*kernelsu", mod->name, 0) && fnmatch("*ksu", mod->name, 0))' "$modpost"
+          grep -Fq 'check_exports(mod);' "$modpost"
+          if grep -Fq 'fnmatch("*kernelsu", mod->name, 0)' "$modpost"; then
+            echo 'YAAP modpost still bypasses KernelSU export checks' >&2
+            exit 1
+          fi
           if grep -q '__version_ext_names") = $' "$modpost"; then
             sed -i 's/__version_ext_names") =$/__version_ext_names") = ""/' "$modpost"
           fi
-          echo 'Applied KSU-specific modpost handling for YAAP LKMs.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Enabled modpost export and CRC checks for YAAP LKMs.' >> "$GITHUB_STEP_SUMMARY"
           mkdir -p "$RUNNER_TEMP/yaap-out"
           make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
             LLVM=1 LLVM_IAS=1 gki_defconfig
@@ -220,6 +224,10 @@ jobs:
           done
           if grep -q '^CONFIG_TRIM_UNUSED_KSYMS=y$' "$RUNNER_TEMP/yaap-out/.config"; then
             echo 'CONFIG_TRIM_UNUSED_KSYMS=y is incompatible with a standalone KernelSU LKM' >&2
+            exit 1
+          fi
+          if grep -q '^CONFIG_MODULE_SIG_ALL=y$' "$RUNNER_TEMP/yaap-out/.config"; then
+            echo 'CONFIG_MODULE_SIG_ALL=y would invalidate signatures when stripping debug data' >&2
             exit 1
           fi
           grep -E '^(CONFIG_(KPROBES|JUMP_LABEL|MODULES|MODULE_UNLOAD|MODVERSIONS|MODULE_SIG|MODULE_SIG_PROTECT|KALLSYMS|KALLSYMS_ALL|TRIM_UNUSED_KSYMS|CFI_CLANG|LTO_CLANG_THIN|DEBUG_INFO_BTF|EXT4_FS|SECURITY_SELINUX|SECCOMP))=' \
@@ -294,9 +302,14 @@ jobs:
           cp "$RUNNER_TEMP/kernelsu_next.ko" "$package/kernelsu_next.ko"
           cp "$RUNNER_TEMP/resukisu.ko" "$package/resukisu.ko"
           cp "$RUNNER_TEMP/backslashxx.ko" "$package/backslashxx.ko"
+          test -x "$CLANG_BIN/llvm-strip"
           kernel_release="$(cat "$RUNNER_TEMP/yaap-out/include/config/kernel.release")"
+          echo '### LKM sizes after debug stripping' >> "$GITHUB_STEP_SUMMARY"
           for ko in "$package"/*.ko; do
             test -s "$ko"
+            original_bytes="$(stat -c %s "$ko")"
+            "$CLANG_BIN/llvm-strip" --strip-debug "$ko"
+            printf '%s: %s -> %s bytes\n' "$(basename "$ko")" "$original_bytes" "$(stat -c %s "$ko")" >> "$GITHUB_STEP_SUMMARY"
             test "$(readelf -h "$ko" | awk -F: '/Machine:/ {gsub(/^[[:space:]]+/, "", $2); print $2}')" = AArch64
             vermagic="$(modinfo -F vermagic "$ko")"
             case "$vermagic" in
@@ -304,8 +317,13 @@ jobs:
               *) echo "vermagic mismatch for $ko: $vermagic (kernel $kernel_release)" >&2; exit 1;;
             esac
             if grep -q '^CONFIG_MODVERSIONS=y$' "$RUNNER_TEMP/yaap-out/.config"; then
-              readelf -S "$ko" | grep -q '\[ *[0-9][0-9]*\][[:space:]]\+__versions' || {
-                echo "missing __versions section in $ko" >&2
+              versions_hex="$(readelf -W -S "$ko" | awk '$0 ~ /\] __versions[[:space:]]/ { print $(NF-5) }')"
+              if [ -z "$versions_hex" ] || [ "$((16#$versions_hex))" -eq 0 ]; then
+                echo "missing or empty __versions section in $ko" >&2
+                exit 1
+              fi
+              readelf -p __versions "$ko" | grep 'module_layout' >/dev/null || {
+                echo "missing module_layout CRC in $ko" >&2
                 exit 1
               }
             fi
@@ -342,7 +360,7 @@ jobs:
             --arg backslashxx_ref "$BACKSLASHXX_REF" \
             --arg backslashxx_commit "$BACKSLASHXX_COMMIT" \
             --argjson variants '["kernelsu", "kernelsu_next", "resukisu", "backslashxx"]' \
-            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, modpost_lkm_patch:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, modpost_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
             > "$package/manifest.json"
           cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
           printf 'Package contents:\n'

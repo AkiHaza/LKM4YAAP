@@ -19,14 +19,12 @@ These are kernel modules, not Manager APKs. The Manager must match the fork's pr
 
 The module must be loaded by a kernel built from the same YAAP source revision, effective `.config`, generated headers, `Module.symvers`, compiler family and module-signature policy. A module built here is not a generic GKI module.
 
-The workflow keeps YAAP's `CONFIG_MODULE_SIG_PROTECT=y` by default. YAAP permits unsigned modules under this setting unless they violate its protected-symbol rules; it is not equivalent to `CONFIG_MODULE_SIG_FORCE=y`. Selecting `n` changes only the build configuration, not an already-installed boot kernel, and may produce a mismatched module. The workflow rejects `CONFIG_MODULE_SIG_ALL=y` because stripping a signed module invalidates its signature.
+The workflow keeps YAAP's `CONFIG_MODULE_SIG_PROTECT=y` by default. YAAP permits unsigned modules under this setting unless they violate its protected-symbol rules; it is not equivalent to `CONFIG_MODULE_SIG_FORCE=y`. Selecting `n` changes only the build configuration, not an already-installed boot kernel, and may produce a mismatched module. The workflow rejects `CONFIG_MODULE_SIG_ALL=y` and `CONFIG_MODULE_SIG_FORCE=y`, because the standalone modules are intentionally unsigned.
 
-The kernel is first built with YAAP's original `CONFIG_MODVERSIONS` setting to
-produce the matching `vmlinux` and symbol data. A separate module-only output
-configuration then disables `CONFIG_MODVERSIONS`, because these LKM loaders
-relocate imports from kallsyms and do not rewrite kernel CRC tables. This does
-not change the phone's kernel configuration or its ABI; it only prevents stale
-or partial `__versions` data from being embedded in the standalone `.ko` files.
+The workflow keeps YAAP's `CONFIG_MODVERSIONS=y`. The KernelSU LKMs need an
+empty `__versions` section: YAAP's module loader rejects a module with no
+`__versions` section unless force-loading is enabled, while the KernelSU
+loaders relocate unresolved imports from kallsyms rather than providing CRCs.
 
 ReSukiSU is built with its tracepoint hook and with manual hook/SUSFS disabled. The YAAP source is not modified with the simonpunk SUSFS patch, so enabling ReSukiSU manual hook or SUSFS would not be a valid default for this tree.
 

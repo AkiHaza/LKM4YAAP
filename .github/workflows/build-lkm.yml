@@ -111,8 +111,6 @@ jobs:
 
           kernel_commit="$(git -C "$KERNEL_DIR" rev-parse HEAD)"
           modules_commit="$(git -C "$MODULES_DIR" rev-parse HEAD)"
-          echo "KERNEL_COMMIT=$kernel_commit" >> "$GITHUB_ENV"
-          echo "MODULES_COMMIT=$modules_commit" >> "$GITHUB_ENV"
 
           touchpanel_link="$KERNEL_DIR/drivers/base/touchpanel_notify"
           test -L "$touchpanel_link"
@@ -120,8 +118,12 @@ jobs:
             "../../../sm8650-modules/oplus/kernel/touchpanel/touchpanel_notify"
           test -f "$touchpanel_link/Kconfig"
           test -f "$touchpanel_link/Makefile"
-          echo "KERNEL_DIR=$KERNEL_DIR" >> "$GITHUB_ENV"
-          echo "MODULES_DIR=$MODULES_DIR" >> "$GITHUB_ENV"
+          {
+            echo "KERNEL_COMMIT=$kernel_commit"
+            echo "MODULES_COMMIT=$modules_commit"
+            echo "KERNEL_DIR=$KERNEL_DIR"
+            echo "MODULES_DIR=$MODULES_DIR"
+          } >> "$GITHUB_ENV"
           {
             echo "### Source revisions"
             echo "- kernel ($KERNEL_REF): \`$kernel_commit\`"
@@ -150,11 +152,13 @@ jobs:
           clone_latest https://github.com/backslashxx/KernelSU.git "$BACKSLASHXX_REF" "$KSU_ROOT/backslashxx"
           # ReSukiSU derives its version from git history and unshallows itself in Kbuild.
           git -C "$KSU_ROOT/resukisu" fetch --unshallow
-          echo "KSU_COMMIT=$(git -C "$KSU_ROOT/kernelsu" rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "KSU_NEXT_COMMIT=$(git -C "$KSU_ROOT/kernelsu-next" rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "RESUKISU_COMMIT=$(git -C "$KSU_ROOT/resukisu" rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "BACKSLASHXX_COMMIT=$(git -C "$KSU_ROOT/backslashxx" rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "KSU_ROOT=$KSU_ROOT" >> "$GITHUB_ENV"
+          {
+            echo "KSU_COMMIT=$(git -C "$KSU_ROOT/kernelsu" rev-parse HEAD)"
+            echo "KSU_NEXT_COMMIT=$(git -C "$KSU_ROOT/kernelsu-next" rev-parse HEAD)"
+            echo "RESUKISU_COMMIT=$(git -C "$KSU_ROOT/resukisu" rev-parse HEAD)"
+            echo "BACKSLASHXX_COMMIT=$(git -C "$KSU_ROOT/backslashxx" rev-parse HEAD)"
+            echo "KSU_ROOT=$KSU_ROOT"
+          } >> "$GITHUB_ENV"
 
       - name: Prepare YAAP kernel configuration
         env:
@@ -204,6 +208,9 @@ jobs:
             LLVM=1 LLVM_IAS=1 olddefconfig
           if [ "$MODULE_SIG_PROTECT" = y ]; then
             grep -q '^CONFIG_MODULE_SIG_PROTECT=y$' "$RUNNER_TEMP/yaap-out/.config"
+          else
+            grep -Eq '^# CONFIG_MODULE_SIG_PROTECT is not set$|^CONFIG_MODULE_SIG_PROTECT=n$' \
+              "$RUNNER_TEMP/yaap-out/.config"
           fi
           for symbol in MODULES KALLSYMS KALLSYMS_ALL; do
             grep -q "^CONFIG_${symbol}=y$" "$RUNNER_TEMP/yaap-out/.config" || {
@@ -217,6 +224,10 @@ jobs:
           fi
           if grep -q '^CONFIG_MODULE_SIG_ALL=y$' "$RUNNER_TEMP/yaap-out/.config"; then
             echo 'CONFIG_MODULE_SIG_ALL=y would invalidate signatures when stripping debug data' >&2
+            exit 1
+          fi
+          if grep -q '^CONFIG_MODULE_SIG_FORCE=y$' "$RUNNER_TEMP/yaap-out/.config"; then
+            echo 'CONFIG_MODULE_SIG_FORCE=y rejects the unsigned standalone LKMs' >&2
             exit 1
           fi
           grep -E '^(CONFIG_(KPROBES|JUMP_LABEL|MODULES|MODULE_UNLOAD|MODVERSIONS|MODULE_SIG|MODULE_SIG_PROTECT|KALLSYMS|KALLSYMS_ALL|TRIM_UNUSED_KSYMS|CFI_CLANG|LTO_CLANG_THIN|DEBUG_INFO_BTF|EXT4_FS|SECURITY_SELINUX|SECCOMP))=' \
@@ -234,15 +245,7 @@ jobs:
           test -s "$RUNNER_TEMP/yaap-out/vmlinux"
           test -s "$RUNNER_TEMP/yaap-out/include/config/kernel.release"
           test -s "$RUNNER_TEMP/yaap-out/include/config/auto.conf"
-          # KernelSU's LKM loader relocates imports from kallsyms and does not
-          # apply kernel CRCs. Keep the full YAAP build above intact so its
-          # vmlinux and symbols are genuine, then use a module-only config
-          # without MODVERSIONS for the four external LKMs.
-          "$KERNEL_DIR/scripts/config" --file "$RUNNER_TEMP/yaap-out/.config" \
-            --disable MODVERSIONS
-          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
-            LLVM=1 LLVM_IAS=1 olddefconfig modules_prepare
-          grep -q '^# CONFIG_MODVERSIONS is not set$' "$RUNNER_TEMP/yaap-out/.config"
+          grep -q '^CONFIG_MODVERSIONS=y$' "$RUNNER_TEMP/yaap-out/.config"
 
       - name: Prepare KernelSU module linker
         run: |
@@ -345,6 +348,10 @@ jobs:
               "$kernel_release"*) ;;
               *) echo "vermagic mismatch for $ko: $vermagic (kernel $kernel_release)" >&2; exit 1;;
             esac
+            case " $vermagic " in
+              *" modversions "*) ;;
+              *) echo "missing modversions vermagic flag for $ko: $vermagic" >&2; exit 1;;
+            esac
             modinfo "$ko" > "$ko.modinfo"
           done
           {
@@ -365,7 +372,7 @@ jobs:
             echo "- ReSukiSU: \`${RESUKISU_COMMIT:0:12}\`"
             echo "- backslashxx/KernelSU: \`${BACKSLASHXX_COMMIT:0:12}\`"
           } > "$RUNNER_TEMP/release-notes.md"
-          sha256sum "$package"/*.ko > "$package/SHA256SUMS"
+          (cd "$package" && sha256sum ./*.ko > SHA256SUMS)
           jq -n \
             --arg tag "$RELEASE_TAG" \
             --arg kernel_repo "$KERNEL_REPO" \
@@ -386,7 +393,7 @@ jobs:
             --arg backslashxx_ref "$BACKSLASHXX_REF" \
             --arg backslashxx_commit "$BACKSLASHXX_COMMIT" \
             --argjson variants '["kernelsu", "kernelsu_next", "resukisu", "backslashxx"]' \
-            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, lkm_modversions:false, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
             > "$package/manifest.json"
           cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
           printf 'Package contents:\n'

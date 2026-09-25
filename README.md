@@ -19,7 +19,7 @@ These are kernel modules, not Manager APKs. The Manager must match the fork's pr
 
 The module must be loaded by a kernel built from the same YAAP source revision, effective `.config`, generated headers, `Module.symvers`, compiler family and module-signature policy. A module built here is not a generic GKI module.
 
-The default workflow input disables `CONFIG_MODULE_SIG_PROTECT` in the build configuration. This does not change an already-installed boot kernel: if that kernel enforces signatures, these unsigned LKMs cannot load. Choosing `y` does not sign the modules; a device-trusted signing path would be required. The workflow rejects `CONFIG_MODULE_SIG_ALL=y` because stripping a signed module invalidates its signature.
+The workflow keeps YAAP's `CONFIG_MODULE_SIG_PROTECT=y` by default. YAAP permits unsigned modules under this setting unless they violate its protected-symbol rules; it is not equivalent to `CONFIG_MODULE_SIG_FORCE=y`. Selecting `n` changes only the build configuration, not an already-installed boot kernel, and may produce a mismatched module. The workflow rejects `CONFIG_MODULE_SIG_ALL=y` because stripping a signed module invalidates its signature.
 
 ReSukiSU is built with its tracepoint hook and with manual hook/SUSFS disabled. The YAAP source is not modified with the simonpunk SUSFS patch, so enabling ReSukiSU manual hook or SUSFS would not be a valid default for this tree.
 
@@ -34,14 +34,16 @@ but they do not build YAAP's vendor tree or its external modules. YAAP's
 so this workflow checks out both trees with those exact names, builds YAAP first,
 and only then builds each external LKM from the resulting headers and
 `Module.symvers`. This is required for YAAP's non-standard exported-symbol set.
-Before the kernel build it restores YAAP's `modpost` export checks for KernelSU
-modules, so their `__versions` tables contain CRCs from this kernel build. The
-workflow stops instead of publishing a module that refers to an unexported
-symbol or has an empty version table. It strips debug information only after
-linking, then rechecks the module metadata and versions.
-An undefined-symbol failure requires an LKM-compatible fork or a matching boot
-kernel that exports the required symbol; suppressing `modpost` cannot make the
-raw `.ko` loadable.
+After building the YAAP kernel and its symbol table, the workflow prepares
+`modpost` for KernelSU's LKM loader. The official, Next, ReSukiSU, and
+backslashxx loaders resolve undefined kernel symbols from `/proc/kallsyms`
+before calling `init_module`; their modules therefore require an empty
+`__versions` section rather than CRC entries for imports. The workflow uses
+upstream KernelSU's symbol checker to require every undefined import to exist
+in the built YAAP `vmlinux` before publishing, and still verifies ELF architecture
+and `vermagic`. A successful build does not prove that the running phone has
+the same symbols or that its loader can read their addresses; device testing
+remains required.
 
 The workflow also rejects configurations without `MODULES`, `KALLSYMS`, or
 `KALLSYMS_ALL`, and rejects `CONFIG_TRIM_UNUSED_KSYMS`, because those settings

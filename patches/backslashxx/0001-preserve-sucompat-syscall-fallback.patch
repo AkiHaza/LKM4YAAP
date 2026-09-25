@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Floran Kernel Builder <noreply@example.invalid>
+Date: Fri, 25 Sep 2026 00:00:00 +0000
+Subject: [PATCH] backslashxx: keep sucompat syscall fallback on branch failure
+
+The ARM64 branch-link hook is optional.  The syscall-table hooks are
+installed before the branch-link worker starts, but the old code restored
+them whenever the worker reached the cleanup labels.  On 6.1 the legacy
+fallback blocks are compiled out, so a failed native call-site scan reached
+the cleanup label with a non-zero (or uninitialised) return value and removed
+the only working 64-bit sucompat hook.
+
+Only a completely successful branch-link path may restore the corresponding
+syscall-table hooks.  A failed path keeps the already-installed fallback.
+Initialize the return value and reset it before the compat attempt so a
+missing native symbol cannot accidentally restore compat hooks.
+---
+ kernel/hook/branch_link_hook_arm64.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/hook/branch_link_hook_arm64.c b/kernel/hook/branch_link_hook_arm64.c
+index 0000000..0000000 100644
+--- a/kernel/hook/branch_link_hook_arm64.c
++++ b/kernel/hook/branch_link_hook_arm64.c
+@@ -345,5 +345,5 @@ static int bl_hook_execve(void *data)
+ {
+-	int ret;
++	int ret = -ENOENT;
+ 	uintptr_t target_callsite;
+ 	uintptr_t target_callsite2;
+ 	uintptr_t symbol_addr;
+@@ -411,9 +411,12 @@ hook3:
+ #endif // < 3.19
+ 
+ unhook_sct_native:
+-	restore_syscall((void *)&aarch64_execve, __AARCH64_execve, (void *)hook_aarch64_execve, (void *)sys_call_table);
+-	restore_syscall((void *)&aarch64_execveat, __AARCH64_execveat, (void *)hook_aarch64_execveat, (void *)sys_call_table);
++	if (!ret) {
++		restore_syscall((void *)&aarch64_execve, __AARCH64_execve, (void *)hook_aarch64_execve, (void *)sys_call_table);
++		restore_syscall((void *)&aarch64_execveat, __AARCH64_execveat, (void *)hook_aarch64_execveat, (void *)sys_call_table);
++	}
+ 
+ #ifdef CONFIG_COMPAT
++	ret = -ENOENT;
+ 	target_callsite = syscall_lookup("compat_sys_execve");
+ 	target_callsite2 = syscall_lookup("compat_sys_execveat");
+@@ -459,8 +463,10 @@ hook3c:
+ #endif // < 3.19
+ 
+ unhook_sct_compat:
+-	restore_syscall((void *)&armeabi_execve, __ARMEABI_execve, (void *)hook_armeabi_execve, (void *)compat_sys_call_table);
+-	restore_syscall((void *)&armeabi_execveat, __ARMEABI_execveat, (void *)hook_armeabi_execveat, (void *)compat_sys_call_table);
++	if (!ret) {
++		restore_syscall((void *)&armeabi_execve, __ARMEABI_execve, (void *)hook_armeabi_execve, (void *)compat_sys_call_table);
++		restore_syscall((void *)&armeabi_execveat, __ARMEABI_execveat, (void *)hook_armeabi_execveat, (void *)compat_sys_call_table);
++	}
+ #endif // COMPAT
+ 	return ret;
+ }
+-- 
+2.45.2

@@ -1,0 +1,277 @@
+diff --git a/kernel/hook/branch_link_hook_arm64.c b/kernel/hook/branch_link_hook_arm64.c
+index d4c1e0e..7aadbc4 100644
+--- a/kernel/hook/branch_link_hook_arm64.c
++++ b/kernel/hook/branch_link_hook_arm64.c
+@@ -340,16 +340,43 @@ unhook_sct_compat:
+ 
+ 	return ret;
+ }
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)
+-static int bl_hook_execve(void *data)
++static int bl_patch_execve_site(uintptr_t target_callsite, uintptr_t symbol_addr,
++		uintptr_t hook_addr, const char *name)
+ {
+ 	int ret;
++
++	if (!target_callsite) {
++		pr_info("branch_link: %s unavailable; syscall-table fallback kept\n", name);
++		return -ENOENT;
++	}
++
++	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite),
++			symbol_addr, hook_addr);
++	pr_info("hook_site: %s ret: %d\n", name, ret);
++	if (ret)
++		pr_info("branch_link: %s inline failed; syscall-table fallback kept\n", name);
++
++	return ret;
++}
++
++static int bl_hook_execve(void *data)
++{
++	int ret = -ENOENT;
++	int site_ret;
+ 	uintptr_t target_callsite;
+ 	uintptr_t target_callsite2;
+ 	uintptr_t symbol_addr;
++	bool execveat_common_ready = false;
++	bool native_execve_inline = false;
++	bool native_execveat_inline = false;
++#ifdef CONFIG_COMPAT
++	bool compat_execve_inline = false;
++	bool compat_execveat_inline = false;
++#endif
+ 
+ 	target_callsite = syscall_lookup("sys_execve");
+ 	target_callsite2 = syscall_lookup("sys_execveat");
+ 
+ 	symbol_addr = kallsyms_lookup_retry("do_execveat_common");
+@@ -357,113 +384,153 @@ static int bl_hook_execve(void *data)
+ 		goto hook2;
+ 
+ 	// patch our hook handler first
+ 	ret = arm64_b_or_bl_patch(kernel_function_lookup(ksu_do_execveat_common), ksym_size_estimate, kernel_function_lookup(ksu_do_execveat_common_fn), symbol_addr);
+ 	pr_info("patch_hook: ksu_do_execveat_common->ksu_do_execveat_common_fn ret: %d \n", ret);
+-	if (ret)
+-		return ret;
+-
+-	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite), symbol_addr, (uintptr_t)&ksu_do_execveat_common);
+-	pr_info("hook_site: sys_execve->do_execveat_common ret: %d \n", ret);
+-	if (!ret && !!target_callsite2) {
+-		ret = arm64_b_or_bl_patch(target_callsite2, ksu_get_ksym_size32(target_callsite2), symbol_addr, (uintptr_t)&ksu_do_execveat_common);
+-		pr_info("hook_site: sys_execveat->do_execveat_common ret: %d \n", ret);
+-	}
+ 	if (!ret)
+-		goto unhook_sct_native;
++		execveat_common_ready = true;
++	else
++		pr_info("branch_link: do_execveat_common inline handler failed; syscall-table fallback kept\n");
++
++	if (execveat_common_ready) {
++		site_ret = bl_patch_execve_site(target_callsite, symbol_addr,
++				(uintptr_t)&ksu_do_execveat_common, "native sys_execve->do_execveat_common");
++		if (!site_ret)
++			native_execve_inline = true;
++
++		site_ret = bl_patch_execve_site(target_callsite2, symbol_addr,
++				(uintptr_t)&ksu_do_execveat_common, "native sys_execveat->do_execveat_common");
++		if (!site_ret)
++			native_execveat_inline = true;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
++		goto native_done;
++#endif
++	}
+ 
+ hook2:
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+ 	symbol_addr = kallsyms_lookup_retry("__do_execve_file");
+ 	if (!symbol_addr)
+ 		goto hook3;
+ 
+ 	// patch our hook handler first
+ 	ret = arm64_b_or_bl_patch(kernel_function_lookup(ksu_do_execve_file), ksym_size_estimate, kernel_function_lookup(ksu_do_execve_file_fn), symbol_addr);
+ 	pr_info("patch_hook: ksu_do_execve_file->ksu_do_execve_file_fn ret: %d \n", ret);
+-	if (ret)
+-		return ret;
+-
+-	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite), symbol_addr, (uintptr_t)&ksu_do_execve_file);
+-	pr_info("hook_site: sys_execve->__do_execve_file ret: %d \n", ret);
+-	if (!ret && !!target_callsite2) {
+-		ret = arm64_b_or_bl_patch(target_callsite2, ksu_get_ksym_size32(target_callsite2), symbol_addr, (uintptr_t)&ksu_do_execve_file);
+-		pr_info("hook_site: sys_execveat->__do_execve_file ret: %d \n", ret);
++	if (!ret) {
++		site_ret = bl_patch_execve_site(target_callsite, symbol_addr,
++				(uintptr_t)&ksu_do_execve_file, "native sys_execve->__do_execve_file");
++		if (!site_ret)
++			native_execve_inline = true;
++
++		site_ret = bl_patch_execve_site(target_callsite2, symbol_addr,
++				(uintptr_t)&ksu_do_execve_file, "native sys_execveat->__do_execve_file");
++		if (!site_ret)
++			native_execveat_inline = true;
+ 	}
+-	if (!ret)
+-		goto unhook_sct_native;
+ #endif // < 5.9
+-hook3:
++	hook3:
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
+ 	symbol_addr = kallsyms_lookup_retry("do_execve_common"); // this symbol doesn't handle execveat
+ 	if (!symbol_addr)
+-		return -ENOENT;
++		goto native_done;
+ 
+ 	// patch our hook handler first
+ 	ret = arm64_b_or_bl_patch(kernel_function_lookup(ksu_do_execve_common), ksym_size_estimate, kernel_function_lookup(ksu_do_execve_common_fn), symbol_addr);
+ 	pr_info("patch_hook: ksu_do_execve_common->ksu_do_execve_common_fn ret: %d \n", ret);
+-	if (ret)
+-		return ret;
+-
+-	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite), symbol_addr, (uintptr_t)&ksu_do_execve_common_fn);
+-	pr_info("hook_site: sys_execve->do_execve_common ret: %d \n", ret);
+-	if (!ret)
+-		goto unhook_sct_native;
++	if (!ret) {
++		site_ret = bl_patch_execve_site(target_callsite, symbol_addr,
++				(uintptr_t)&ksu_do_execve_common_fn, "native sys_execve->do_execve_common");
++		if (!site_ret)
++			native_execve_inline = true;
++	}
+ #endif // < 3.19
+ 
+-unhook_sct_native:
+-	restore_syscall((void *)&aarch64_execve, __AARCH64_execve, (void *)hook_aarch64_execve, (void *)sys_call_table);
+-	restore_syscall((void *)&aarch64_execveat, __AARCH64_execveat, (void *)hook_aarch64_execveat, (void *)sys_call_table);
++native_done:
++	if (native_execve_inline) {
++		restore_syscall((void *)&aarch64_execve, __AARCH64_execve, (void *)hook_aarch64_execve, (void *)sys_call_table);
++		pr_info("branch_link: native execve inline active; syscall-table fallback removed\n");
++	} else {
++		pr_info("branch_link: native execve inline unavailable; syscall-table fallback kept\n");
++	}
++	if (native_execveat_inline) {
++		restore_syscall((void *)&aarch64_execveat, __AARCH64_execveat, (void *)hook_aarch64_execveat, (void *)sys_call_table);
++		pr_info("branch_link: native execveat inline active; syscall-table fallback removed\n");
++	} else {
++		pr_info("branch_link: native execveat inline unavailable; syscall-table fallback kept\n");
++	}
+ 
+ #ifdef CONFIG_COMPAT
+ 	target_callsite = syscall_lookup("compat_sys_execve");
+ 	target_callsite2 = syscall_lookup("compat_sys_execveat");
+ 
+ 	symbol_addr = kallsyms_lookup_retry("do_execveat_common");
+-	if (!symbol_addr)
++	if (!symbol_addr || !execveat_common_ready)
+ 		goto hook2c;
+ 
+-	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite), symbol_addr, (uintptr_t)&ksu_do_execveat_common);
+-	pr_info("hook_site: compat_sys_execve->do_execveat_common ret: %d \n", ret);
+-	if (!ret && !!target_callsite2) {
+-		ret = arm64_b_or_bl_patch(target_callsite2, ksu_get_ksym_size32(target_callsite2), symbol_addr, (uintptr_t)&ksu_do_execveat_common);
+-		pr_info("hook_site: compat_sys_execveat->do_execveat_common ret: %d \n", ret);
+-	}
+-	if (!ret)
+-		goto unhook_sct_compat;
++	site_ret = bl_patch_execve_site(target_callsite, symbol_addr,
++			(uintptr_t)&ksu_do_execveat_common, "compat execve->do_execveat_common");
++	if (!site_ret)
++		compat_execve_inline = true;
++
++	site_ret = bl_patch_execve_site(target_callsite2, symbol_addr,
++			(uintptr_t)&ksu_do_execveat_common, "compat execveat->do_execveat_common");
++	if (!site_ret)
++		compat_execveat_inline = true;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
++	goto compat_done;
++#endif
+ 
+ hook2c:
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 9, 0)
+ 	symbol_addr = kallsyms_lookup_retry("__do_execve_file");
+ 	if (!symbol_addr)
+ 		goto hook3c;
+ 
+-	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite), symbol_addr, (uintptr_t)&ksu_do_execve_file);
+-	pr_info("hook_site: compat_sys_execve->__do_execve_file ret: %d \n", ret);
+-	if (!ret && !!target_callsite2) {
+-		ret = arm64_b_or_bl_patch(target_callsite2, ksu_get_ksym_size32(target_callsite2), symbol_addr, (uintptr_t)&ksu_do_execve_file);
+-		pr_info("hook_site: compat_sys_execveat->__do_execve_file ret: %d \n", ret);
+-	}
+-	if (!ret)
+-		goto unhook_sct_compat;
++	site_ret = bl_patch_execve_site(target_callsite, symbol_addr,
++			(uintptr_t)&ksu_do_execve_file, "compat execve->__do_execve_file");
++	if (!site_ret)
++		compat_execve_inline = true;
++
++	site_ret = bl_patch_execve_site(target_callsite2, symbol_addr,
++			(uintptr_t)&ksu_do_execve_file, "compat execveat->__do_execve_file");
++	if (!site_ret)
++		compat_execveat_inline = true;
+ #endif // < 5.9
+ hook3c:
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0)
+ 	symbol_addr = kallsyms_lookup_retry("do_execve_common");
+ 	if (!symbol_addr)
+-		return -ENOENT;
++		goto compat_done;
+ 
+-	ret = arm64_b_or_bl_patch(target_callsite, ksu_get_ksym_size32(target_callsite), symbol_addr, (uintptr_t)&ksu_do_execve_common_fn);
+-	pr_info("hook_site: compat_sys_execve->do_execve_common ret: %d \n", ret);
+-	if (!ret)
+-		goto unhook_sct_compat;
++	site_ret = bl_patch_execve_site(target_callsite, symbol_addr,
++			(uintptr_t)&ksu_do_execve_common_fn, "compat execve->do_execve_common");
++	if (!site_ret)
++		compat_execve_inline = true;
+ #endif // < 3.19
+ 
+-unhook_sct_compat:
+-	restore_syscall((void *)&armeabi_execve, __ARMEABI_execve, (void *)hook_armeabi_execve, (void *)compat_sys_call_table);
+-	restore_syscall((void *)&armeabi_execveat, __ARMEABI_execveat, (void *)hook_armeabi_execveat, (void *)compat_sys_call_table);
++compat_done:
++	if (compat_execve_inline) {
++		restore_syscall((void *)&armeabi_execve, __ARMEABI_execve, (void *)hook_armeabi_execve, (void *)compat_sys_call_table);
++		pr_info("branch_link: compat execve inline active; syscall-table fallback removed\n");
++	} else {
++		pr_info("branch_link: compat execve inline unavailable; syscall-table fallback kept\n");
++	}
++	if (compat_execveat_inline) {
++		restore_syscall((void *)&armeabi_execveat, __ARMEABI_execveat, (void *)hook_armeabi_execveat, (void *)compat_sys_call_table);
++		pr_info("branch_link: compat execveat inline active; syscall-table fallback removed\n");
++	} else {
++		pr_info("branch_link: compat execveat inline unavailable; syscall-table fallback kept\n");
++	}
+ #endif // COMPAT
++	if (native_execve_inline || native_execveat_inline
++#ifdef CONFIG_COMPAT
++		|| compat_execve_inline || compat_execveat_inline
++#endif
++	)
++		ret = 0;
++	else
++		ret = -ENOENT;
+ 	return ret;
+ }
+ #else /* < 3.14 */
+ static int bl_hook_execve(void *data)
+ {
+@@ -519,13 +586,13 @@ static int bl_hack_init_thread(void *data)
+ {
+ 	set_user_nice(current, 19); // low prio
+ 
+ 	bool faccessat = !!!bl_hook_faccessat(data);
+ 	bool newfstatat = !!!bl_hook_newfstatat(data);
+-	bool execve = !!!bl_hook_execve(data);
++	int execve = bl_hook_execve(data);
+ 
+-	pr_info("branch_link: done! faccessat: %s newfstatat: %s execve: %s\n", (faccessat) ? "ok" : "fail", (newfstatat) ? "ok" : "fail", (execve) ? "ok" : "fail");
++	pr_info("branch_link: done! faccessat: %s newfstatat: %s execve: see per-path status (ret: %d)\n", (faccessat) ? "ok" : "fail", (newfstatat) ? "ok" : "fail", execve);
+ 
+ 	dotted_kallsyms_destroy_hash_array();
+ 
+ 	return 0;
+ }
+

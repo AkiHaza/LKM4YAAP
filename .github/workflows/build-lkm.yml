@@ -160,6 +160,23 @@ jobs:
             echo "KSU_ROOT=$KSU_ROOT"
           } >> "$GITHUB_ENV"
 
+      - name: Patch backslashxx ARM64 sucompat fallback
+        env:
+          KSU_ROOT: ${{ runner.temp }}/ksu-sources
+        run: |
+          set -euxo pipefail
+          patch_file="$GITHUB_WORKSPACE/patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch"
+          source_file="$KSU_ROOT/backslashxx/kernel/hook/branch_link_hook_arm64.c"
+          test -s "$patch_file"
+          test -s "$source_file"
+          git -C "$KSU_ROOT/backslashxx" apply --check "$patch_file"
+          git -C "$KSU_ROOT/backslashxx" apply --whitespace=error "$patch_file"
+          git -C "$KSU_ROOT/backslashxx" diff --check
+          grep -Fq 'int ret = -ENOENT;' "$source_file"
+          grep -Fq 'if (!ret) {' "$source_file"
+          echo "BACKSLASHXX_PATCH=0001-preserve-sucompat-syscall-fallback" >> "$GITHUB_ENV"
+          echo '- backslashxx compatibility patch: `0001-preserve-sucompat-syscall-fallback`' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Prepare YAAP kernel configuration
         env:
           MODULE_SIG_PROTECT: ${{ inputs.module_sig_protect }}
@@ -212,7 +229,7 @@ jobs:
             grep -Eq '^# CONFIG_MODULE_SIG_PROTECT is not set$|^CONFIG_MODULE_SIG_PROTECT=n$' \
               "$RUNNER_TEMP/yaap-out/.config"
           fi
-          for symbol in MODULES KALLSYMS KALLSYMS_ALL; do
+          for symbol in MODULES KALLSYMS KALLSYMS_ALL SECCOMP SECCOMP_FILTER; do
             grep -q "^CONFIG_${symbol}=y$" "$RUNNER_TEMP/yaap-out/.config" || {
               echo "CONFIG_${symbol}=y is required for an LKM build" >&2
               exit 1
@@ -230,7 +247,7 @@ jobs:
             echo 'CONFIG_MODULE_SIG_FORCE=y rejects the unsigned standalone LKMs' >&2
             exit 1
           fi
-          grep -E '^(CONFIG_(KPROBES|JUMP_LABEL|MODULES|MODULE_UNLOAD|MODVERSIONS|MODULE_SIG|MODULE_SIG_PROTECT|KALLSYMS|KALLSYMS_ALL|TRIM_UNUSED_KSYMS|CFI_CLANG|LTO_CLANG_THIN|DEBUG_INFO_BTF|EXT4_FS|SECURITY_SELINUX|SECCOMP))=' \
+          grep -E '^(CONFIG_(KPROBES|JUMP_LABEL|MODULES|MODULE_UNLOAD|MODVERSIONS|MODULE_SIG|MODULE_SIG_PROTECT|KALLSYMS|KALLSYMS_ALL|TRIM_UNUSED_KSYMS|CFI_CLANG|LTO_CLANG_THIN|DEBUG_INFO_BTF|EXT4_FS|SECURITY_SELINUX|SECCOMP|SECCOMP_FILTER))=' \
             "$RUNNER_TEMP/yaap-out/.config" | tee "$RUNNER_TEMP/yaap-config.txt"
 
       - name: Build YAAP kernel symbols

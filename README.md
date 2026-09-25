@@ -58,4 +58,9 @@ commit, so each run uses the current tip of the selected YAAP and KernelSU
 branches. The workflow also applies a narrow compatibility fix for the current
 YAAP `certs/extract-cert.c` `key_pass` declaration bug. The other fixes address
 the toolchain `clang` directory mis-detection, the YAAP modules symlink, missing
-`modules_prepare`, and ReSukiSU's multi-manager tracepoint configuration.
+`modules_prepare`, and ReSukiSU's multi-manager tracepoint configuration. For
+backslashxx/KernelSU, it also applies a versioned ARM64 sucompat fix: when
+branch-link scanning cannot find the YAAP 6.1 call site, the already-installed
+64-bit syscall-table fallback is retained instead of being unconditionally
+restored. This allows `/system/bin/su` from 64-bit applications to reach
+`ksud` on the affected YAAP builds.

@@ -339,6 +339,14 @@ jobs:
               echo "- $(basename "$ko"): $(modinfo -F vermagic "$ko")"
             done
           } > "$package/README.txt"
+          {
+            echo "YAAP kernel ($KERNEL_REF): \`${KERNEL_COMMIT:0:12}\`"
+            echo
+            echo "- KernelSU: \`${KSU_COMMIT:0:12}\`"
+            echo "- KernelSU-Next: \`${KSU_NEXT_COMMIT:0:12}\`"
+            echo "- ReSukiSU: \`${RESUKISU_COMMIT:0:12}\`"
+            echo "- backslashxx/KernelSU: \`${BACKSLASHXX_COMMIT:0:12}\`"
+          } > "$RUNNER_TEMP/release-notes.md"
           sha256sum "$package"/*.ko > "$package/SHA256SUMS"
           jq -n \
             --arg tag "$RELEASE_TAG" \
@@ -381,11 +389,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.metadata.outputs.tag }}
-          name: YAAP KernelSU LKM ${{ steps.metadata.outputs.tag }}
-          body_path: ${{ runner.temp }}/package/README.txt
+          name: Frieren Kernel Release
+          body_path: ${{ runner.temp }}/release-notes.md
           files: |
             ${{ runner.temp }}/package/*.ko
-            ${{ runner.temp }}/package/SHA256SUMS
-            ${{ runner.temp }}/package/manifest.json
-            ${{ runner.temp }}/package/yaap-config.txt
           fail_on_unmatched_files: true

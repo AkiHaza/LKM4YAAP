@@ -234,6 +234,15 @@ jobs:
           test -s "$RUNNER_TEMP/yaap-out/vmlinux"
           test -s "$RUNNER_TEMP/yaap-out/include/config/kernel.release"
           test -s "$RUNNER_TEMP/yaap-out/include/config/auto.conf"
+          # KernelSU's LKM loader relocates imports from kallsyms and does not
+          # apply kernel CRCs. Keep the full YAAP build above intact so its
+          # vmlinux and symbols are genuine, then use a module-only config
+          # without MODVERSIONS for the four external LKMs.
+          "$KERNEL_DIR/scripts/config" --file "$RUNNER_TEMP/yaap-out/.config" \
+            --disable MODVERSIONS
+          make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
+            LLVM=1 LLVM_IAS=1 olddefconfig modules_prepare
+          grep -q '^# CONFIG_MODVERSIONS is not set$' "$RUNNER_TEMP/yaap-out/.config"
 
       - name: Prepare KernelSU module linker
         run: |
@@ -254,6 +263,11 @@ jobs:
             echo 'KernelSU modpost compatibility patch did not apply' >&2
             exit 1
           fi
+          # YAAP's modpost treats unresolved imports as fatal. KernelSU LKM
+          # loaders relocate these imports from /proc/kallsyms immediately
+          # before init_module, so use modpost's warning mode and validate
+          # the complete import set against vmlinux below.
+          echo 'KBUILD_MODPOST_WARN=1' >> "$GITHUB_ENV"
           make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
             LLVM=1 LLVM_IAS=1 scripts
           test -x "$RUNNER_TEMP/yaap-out/scripts/mod/modpost"
@@ -372,7 +386,7 @@ jobs:
             --arg backslashxx_ref "$BACKSLASHXX_REF" \
             --arg backslashxx_commit "$BACKSLASHXX_COMMIT" \
             --argjson variants '["kernelsu", "kernelsu_next", "resukisu", "backslashxx"]' \
-            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, lkm_modversions:false, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
             > "$package/manifest.json"
           cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
           printf 'Package contents:\n'

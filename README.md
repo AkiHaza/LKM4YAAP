@@ -21,6 +21,13 @@ The module must be loaded by a kernel built from the same YAAP source revision, 
 
 The workflow keeps YAAP's `CONFIG_MODULE_SIG_PROTECT=y` by default. YAAP permits unsigned modules under this setting unless they violate its protected-symbol rules; it is not equivalent to `CONFIG_MODULE_SIG_FORCE=y`. Selecting `n` changes only the build configuration, not an already-installed boot kernel, and may produce a mismatched module. The workflow rejects `CONFIG_MODULE_SIG_ALL=y` because stripping a signed module invalidates its signature.
 
+The kernel is first built with YAAP's original `CONFIG_MODVERSIONS` setting to
+produce the matching `vmlinux` and symbol data. A separate module-only output
+configuration then disables `CONFIG_MODVERSIONS`, because these LKM loaders
+relocate imports from kallsyms and do not rewrite kernel CRC tables. This does
+not change the phone's kernel configuration or its ABI; it only prevents stale
+or partial `__versions` data from being embedded in the standalone `.ko` files.
+
 ReSukiSU is built with its tracepoint hook and with manual hook/SUSFS disabled. The YAAP source is not modified with the simonpunk SUSFS patch, so enabling ReSukiSU manual hook or SUSFS would not be a valid default for this tree.
 
 The modules repository is cloned from the latest `seventeen` revision for provenance. Its Android build metadata is not merged into the standalone kernel build; the LKM is compiled against the latest YAAP kernel tree and its exported symbols.

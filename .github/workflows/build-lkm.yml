@@ -271,8 +271,10 @@ jobs:
           # before init_module, so use modpost's warning mode and validate
           # the complete import set against vmlinux below.
           echo 'KBUILD_MODPOST_WARN=1' >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/yaap-out/scripts/mod/modpost" \
+            "$RUNNER_TEMP/yaap-out/scripts/mod/modpost.o"
           make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
-            LLVM=1 LLVM_IAS=1 scripts
+            LLVM=1 LLVM_IAS=1 prepare0
           test -x "$RUNNER_TEMP/yaap-out/scripts/mod/modpost"
           echo 'KernelSU LKMs use kallsyms relocation; modpost leaves their __versions empty.' >> "$GITHUB_STEP_SUMMARY"
 

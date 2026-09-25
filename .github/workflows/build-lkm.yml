@@ -48,6 +48,23 @@ jobs:
     timeout-minutes: 180
 
     steps:
+      - name: Checkout workflow and patches
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify checked-out repository files
+        run: |
+          set -euxo pipefail
+          test -n "${GITHUB_SHA:-}"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f .github/workflows/build-lkm.yml
+          test -s patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch
+          git diff --check
+          printf 'Checked out repository: %s\n' "$(git rev-parse HEAD)"
+          printf 'Patch SHA256: '
+          sha256sum patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch
+
       - name: Setup swap space
         uses: pierotofy/set-swap-space@master
         with:

@@ -1,17 +1,18 @@
 # YAAP KernelSU LKM builder
 
-This repository builds four loadable KernelSU modules against the YAAP OnePlus SM8650 `seventeen` kernel:
+This repository builds five loadable KernelSU modules against the YAAP OnePlus SM8650 `seventeen` kernel:
 
 - `kernelsu.ko`: official KernelSU
 - `kernelsu_next.ko`: KernelSU-Next
 - `resukisu.ko`: ReSukiSU
+- `kowx712.ko`: `KOWX712/KernelSU`
 - `backslashxx.ko`: `backslashxx/KernelSU`
 
-The workflow is `.github/workflows/build-lkm.yml`. Start it with **Actions -> Build YAAP KernelSU LKM -> Run workflow**. It follows the latest commits on the configured YAAP and KSU branches and uses the Floran clang-r596125 toolchain. The GitHub Release is titled **Frieren Kernel Release** and contains only the four debug-stripped `.ko` files; its notes show the YAAP kernel and each KernelSU fork's latest 12-character commit hash. The Actions artifact retains `manifest.json`, `SHA256SUMS` and the effective YAAP config for build diagnostics.
+The workflow is `.github/workflows/build-lkm.yml`. Start it with **Actions -> Build YAAP KernelSU LKM -> Run workflow**. It follows the latest commits on the configured YAAP and KSU branches and uses the Floran clang-r596125 toolchain. The GitHub Release is titled **Frieren Kernel Release** and contains only the five debug-stripped `.ko` files; its notes show the YAAP kernel and each KernelSU fork's latest 12-character commit hash. The Actions artifact retains `manifest.json`, `SHA256SUMS` and the effective YAAP config for build diagnostics.
 
 ## Loading the module
 
-Use the Manager belonging to the selected KernelSU fork and choose its LKM/module installation flow. Alternatively, upload the matching raw `.ko` in `E:\Code\ksupatcher` and use ksupatcher to patch `init_boot.img`. Do not install more than one of the four modules in the same boot image.
+Use the Manager belonging to the selected KernelSU fork and choose its LKM/module installation flow. Alternatively, upload the matching raw `.ko` in `E:\Code\ksupatcher` and use ksupatcher to patch `init_boot.img`. Do not install more than one of the five modules in the same boot image.
 
 These are kernel modules, not Manager APKs. The Manager must match the fork's protocol and package/signature expectations.
 
@@ -40,8 +41,8 @@ so this workflow checks out both trees with those exact names, builds YAAP first
 and only then builds each external LKM from the resulting headers and
 `Module.symvers`. This is required for YAAP's non-standard exported-symbol set.
 After building the YAAP kernel and its symbol table, the workflow prepares
-`modpost` for KernelSU's LKM loader. The official, Next, ReSukiSU, and
-backslashxx loaders resolve undefined kernel symbols from `/proc/kallsyms`
+`modpost` for KernelSU's LKM loader. The official, Next, ReSukiSU, KOWX712,
+and backslashxx loaders resolve undefined kernel symbols from `/proc/kallsyms`
 before calling `init_module`; their modules therefore require an empty
 `__versions` section rather than CRC entries for imports. The workflow uses
 upstream KernelSU's symbol checker to require every undefined import to exist
@@ -52,7 +53,12 @@ remains required.
 
 The workflow also rejects configurations without `MODULES`, `KALLSYMS`, or
 `KALLSYMS_ALL`, and rejects `CONFIG_TRIM_UNUSED_KSYMS`, because those settings
-cannot produce a generally loadable KernelSU LKM. Every source clone first
+cannot produce a generally loadable KernelSU LKM.
+
+KOWX712 additionally requires `KPROBES`, `EXT4_FS`, and
+`HAVE_SYSCALL_TRACEPOINTS` in the effective YAAP configuration.
+
+Every source clone first
 resolves `refs/heads/<branch>` with `git ls-remote` and verifies the checked-out
 commit, so each run uses the current tip of the selected YAAP and KernelSU
 branches. The workflow also applies a narrow compatibility fix for the current
@@ -64,3 +70,12 @@ branch-link scanning cannot find the YAAP 6.1 call site, the already-installed
 64-bit syscall-table fallback is retained instead of being unconditionally
 restored. This allows `/system/bin/su` from 64-bit applications to reach
 `ksud` on the affected YAAP builds.
+
+KOWX712's main branch uses an ARM64 syscall dispatcher and a `sys_enter`
+tracepoint for sucompat. It does not contain backslashxx's
+`branch_link_hook_arm64.c` or its execve call-site scan, so the backslashxx
+fallback patch is not applied to `kowx712.ko`. KOWX712's separate
+`build-xx-lkm.yml` builds a patched backslashxx variant; this workflow builds
+KOWX712's own `master` branch instead. Its tracepoint handler skips 32-bit
+compat tasks, so do not assume identical compat su behavior across the two
+forks.

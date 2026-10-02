@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Floran Kernel Builder <noreply@example.invalid>
+Date: Thu, 1 Oct 2026 00:00:00 +0000
+Subject: [PATCH] backslashxx: keep syscall-table hooks on YAAP
+
+Keep the syscall-table hooks installed and skip the optional inline patch
+worker for YAAP. This avoids sucompat call-site text patching while retaining
+syscall-table sucompat. Release the skipped worker's symbol-cache reference
+so the remaining audit worker can complete normal cache cleanup.
+---
+ kernel/hook/branch_link_hook_arm64.c | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/kernel/hook/branch_link_hook_arm64.c b/kernel/hook/branch_link_hook_arm64.c
+index 0000000..0000000 100644
+--- a/kernel/hook/branch_link_hook_arm64.c
++++ b/kernel/hook/branch_link_hook_arm64.c
+@@ -536,13 +536,8 @@ static int ksu_branch_link_patch_init()
+ 	syscall_table_ksud_hook_init();
+ 	syscall_table_sucompat_enable();
+ 
+-	/**
+-	 *  we move sucompat hook initialization to a kthread
+-	 *  due to it falling back to a bruteforce ksym lookup if !kprobes
+-	 *  it somewhat takes 0.5 ~ 1s to scan whole kernel _stext to _etext
+-	 *  so this better be offloaded
+-	 */
+-	kthread_run(bl_hack_init_thread, NULL, "kthread");
++	dotted_kallsyms_destroy_hash_array();
++	pr_info("branch_link: worker disabled for YAAP; syscall-table hooks retained\n");
+ 
+ 	return 0;
+ }
+-- 
+2.45.2

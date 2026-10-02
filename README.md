@@ -71,6 +71,17 @@ branch-link scanning cannot find the YAAP 6.1 call site, the already-installed
 restored. This allows `/system/bin/su` from 64-bit applications to reach
 `ksud` on the affected YAAP builds.
 
+Device comparisons report an `arm64CpuIdentity` mismatch with backslashxx,
+while KOWX712, ReSukiSU, and a boot without KernelSU show no mismatch. This
+identifies backslashxx as the trigger; the responsible hook is still unknown.
+Set the workflow input `backslashxx_branch_link` to `false` to build a
+diagnostic variant that skips its optional ARM64 inline worker and retains
+the syscall-table hooks. The input defaults to `true`. This experiment
+isolates the sucompat branch-link worker, not every backslashxx text patch,
+and requires a fresh boot, a repeat of the CPU identity probe, and a
+`su -c id` check from an authorized app. The setting and applied patches are
+recorded in the release notes and manifest.
+
 KOWX712's main branch uses an ARM64 syscall dispatcher and a `sys_enter`
 tracepoint for sucompat. It does not contain backslashxx's
 `branch_link_hook_arm64.c` or its execve call-site scan, so the backslashxx

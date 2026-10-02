@@ -21,6 +21,11 @@ on:
         options:
           - n
           - y
+      backslashxx_branch_link:
+        description: Enable backslashxx inline worker (disable to investigate CPU identity mismatch)
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -61,10 +66,11 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -f .github/workflows/build-lkm.yml
           test -s patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch
+          test -s patches/backslashxx/0002-disable-arm64-branch-link-worker.patch
           git diff --check
           printf 'Checked out repository: %s\n' "$(git rev-parse HEAD)"
           printf 'Patch SHA256: '
-          sha256sum patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch
+          sha256sum patches/backslashxx/*.patch
 
       - name: Setup swap space
         uses: pierotofy/set-swap-space@master
@@ -185,19 +191,46 @@ jobs:
       - name: Patch backslashxx ARM64 sucompat fallback
         env:
           KSU_ROOT: ${{ runner.temp }}/ksu-sources
+          BACKSLASHXX_BRANCH_LINK: ${{ inputs.backslashxx_branch_link }}
         run: |
           set -euxo pipefail
           patch_file="$GITHUB_WORKSPACE/patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch"
+          worker_patch="$GITHUB_WORKSPACE/patches/backslashxx/0002-disable-arm64-branch-link-worker.patch"
           source_file="$KSU_ROOT/backslashxx/kernel/hook/branch_link_hook_arm64.c"
           test -s "$patch_file"
+          test -s "$worker_patch"
           test -s "$source_file"
           git -C "$KSU_ROOT/backslashxx" apply --check "$patch_file"
           git -C "$KSU_ROOT/backslashxx" apply --whitespace=error "$patch_file"
+          worker_patch_name=""
+          if [ "$BACKSLASHXX_BRANCH_LINK" = false ]; then
+            git -C "$KSU_ROOT/backslashxx" apply --check "$worker_patch"
+            git -C "$KSU_ROOT/backslashxx" apply --whitespace=error "$worker_patch"
+            if grep -Fq 'kthread_run(bl_hack_init_thread' "$source_file"; then
+              echo "backslashxx branch-link worker is still enabled" >&2
+              exit 1
+            fi
+            grep -Fq 'syscall_table_ksud_hook_init();' "$source_file"
+            grep -Fq 'syscall_table_sucompat_enable();' "$source_file"
+            worker_patch_name="0002-disable-arm64-branch-link-worker"
+          else
+            grep -Fq 'kthread_run(bl_hack_init_thread' "$source_file"
+          fi
           git -C "$KSU_ROOT/backslashxx" diff --check
           grep -Fq 'int ret = -ENOENT;' "$source_file"
           grep -Fq 'if (!ret) {' "$source_file"
-          echo "BACKSLASHXX_PATCH=0001-preserve-sucompat-syscall-fallback" >> "$GITHUB_ENV"
-          echo '- backslashxx compatibility patch: `0001-preserve-sucompat-syscall-fallback`' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "BACKSLASHXX_PATCH=0001-preserve-sucompat-syscall-fallback"
+            echo "BACKSLASHXX_WORKER_PATCH=$worker_patch_name"
+            echo "BACKSLASHXX_BRANCH_LINK=$BACKSLASHXX_BRANCH_LINK"
+          } >> "$GITHUB_ENV"
+          {
+            echo "- backslashxx compatibility patch: \`0001-preserve-sucompat-syscall-fallback\`"
+            echo "- backslashxx branch-link worker: $BACKSLASHXX_BRANCH_LINK"
+            if [ -n "$worker_patch_name" ]; then
+              echo "- backslashxx diagnostic patch: \`$worker_patch_name\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare YAAP kernel configuration
         env:
@@ -424,6 +457,11 @@ jobs:
             echo "- ReSukiSU: \`${RESUKISU_COMMIT:0:12}\`"
             echo "- KOWX712/KernelSU: \`${KOWX712_COMMIT:0:12}\`"
             echo "- backslashxx/KernelSU: \`${BACKSLASHXX_COMMIT:0:12}\`"
+            echo "- backslashxx compatibility patch: \`${BACKSLASHXX_PATCH}\`"
+            echo "- backslashxx branch-link worker: $BACKSLASHXX_BRANCH_LINK"
+            if [ -n "$BACKSLASHXX_WORKER_PATCH" ]; then
+              echo "- backslashxx diagnostic patch: \`${BACKSLASHXX_WORKER_PATCH}\`"
+            fi
           } > "$RUNNER_TEMP/release-notes.md"
           (cd "$package" && sha256sum ./*.ko > SHA256SUMS)
           jq -n \
@@ -447,8 +485,11 @@ jobs:
             --arg kowx712_commit "$KOWX712_COMMIT" \
             --arg backslashxx_ref "$BACKSLASHXX_REF" \
             --arg backslashxx_commit "$BACKSLASHXX_COMMIT" \
+            --arg backslashxx_patch "$BACKSLASHXX_PATCH" \
+            --arg backslashxx_worker_patch "$BACKSLASHXX_WORKER_PATCH" \
+            --argjson backslashxx_branch_link "$BACKSLASHXX_BRANCH_LINK" \
             --argjson variants '["kernelsu", "kernelsu_next", "resukisu", "kowx712", "backslashxx"]' \
-            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},kowx712:{ref:$kowx712_ref,commit:$kowx712_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit}}, variants:$variants}' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},kowx712:{ref:$kowx712_ref,commit:$kowx712_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit,branch_link_worker:$backslashxx_branch_link,patches:([$backslashxx_patch,$backslashxx_worker_patch] | map(select(length > 0)))}}, variants:$variants}' \
             > "$package/manifest.json"
           cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
           printf 'Package contents:\n'

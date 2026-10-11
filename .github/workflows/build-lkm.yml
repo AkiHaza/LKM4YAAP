@@ -43,7 +43,7 @@ env:
   TOOLCHAIN_URL: https://github.com/AkiHaza/Floran-Kernel/releases/download/toolchain-r596125/linux-x86-refs_heads_android17-release-clang-r596125.tar.gz
   KSU_REF: main
   KSU_NEXT_REF: dev
-  RESUKISU_REF: main
+  BAKASU_REF: main
   KOWX712_REF: master
   BACKSLASHXX_REF: master
 
@@ -172,17 +172,17 @@ jobs:
           }
           clone_latest https://github.com/tiann/KernelSU.git "$KSU_REF" "$KSU_ROOT/kernelsu"
           clone_latest https://github.com/KernelSU-Next/KernelSU-Next.git "$KSU_NEXT_REF" "$KSU_ROOT/kernelsu-next"
-          clone_latest https://github.com/ReSukiSU/ReSukiSU.git "$RESUKISU_REF" "$KSU_ROOT/resukisu"
+          clone_latest https://github.com/Baka-SU/BakaSU.git "$BAKASU_REF" "$KSU_ROOT/bakasu"
           clone_latest https://github.com/KOWX712/KernelSU.git "$KOWX712_REF" "$KSU_ROOT/kowx712"
           clone_latest https://github.com/backslashxx/KernelSU.git "$BACKSLASHXX_REF" "$KSU_ROOT/backslashxx"
-          # Both forks derive their versions from the complete git history.
-          git -C "$KSU_ROOT/resukisu" fetch --unshallow
+          # BakaSU derives its version code from the complete git history.
+          git -C "$KSU_ROOT/bakasu" fetch --unshallow
           # KOWX712 also derives KSU_VERSION from the complete git history.
           git -C "$KSU_ROOT/kowx712" fetch --unshallow
           {
             echo "KSU_COMMIT=$(git -C "$KSU_ROOT/kernelsu" rev-parse HEAD)"
             echo "KSU_NEXT_COMMIT=$(git -C "$KSU_ROOT/kernelsu-next" rev-parse HEAD)"
-            echo "RESUKISU_COMMIT=$(git -C "$KSU_ROOT/resukisu" rev-parse HEAD)"
+            echo "BAKASU_COMMIT=$(git -C "$KSU_ROOT/bakasu" rev-parse HEAD)"
             echo "KOWX712_COMMIT=$(git -C "$KSU_ROOT/kowx712" rev-parse HEAD)"
             echo "BACKSLASHXX_COMMIT=$(git -C "$KSU_ROOT/backslashxx" rev-parse HEAD)"
             echo "KSU_ROOT=$KSU_ROOT"
@@ -370,18 +370,18 @@ jobs:
           test -s "$KSU_ROOT/kernelsu-next/kernel/kernelsu.ko"
           cp "$KSU_ROOT/kernelsu-next/kernel/kernelsu.ko" "$RUNNER_TEMP/kernelsu_next.ko"
 
-      - name: Build ReSukiSU LKM
+      - name: Build BakaSU LKM
         run: |
           set -euxo pipefail
           export PATH="$CLANG_BIN:$PATH"
           make -C "$KERNEL_DIR" O="$RUNNER_TEMP/yaap-out" ARCH="$ARCH" \
-            LLVM=1 LLVM_IAS=1 M="$KSU_ROOT/resukisu/kernel" \
-            src="$KSU_ROOT/resukisu/kernel" CONFIG_KSU=m \
+            LLVM=1 LLVM_IAS=1 M="$KSU_ROOT/bakasu/kernel" \
+            src="$KSU_ROOT/bakasu/kernel" CONFIG_KSU=m \
             CONFIG_KSU_TRACEPOINT_HOOK=y CONFIG_KSU_MANUAL_HOOK=n \
             CONFIG_KSU_MULTI_MANAGER_SUPPORT=y \
             CONFIG_KSU_SUSFS=n modules
-          test -s "$KSU_ROOT/resukisu/kernel/kernelsu.ko"
-          cp "$KSU_ROOT/resukisu/kernel/kernelsu.ko" "$RUNNER_TEMP/resukisu.ko"
+          test -s "$KSU_ROOT/bakasu/kernel/kernelsu.ko"
+          cp "$KSU_ROOT/bakasu/kernel/kernelsu.ko" "$RUNNER_TEMP/bakasu.ko"
 
       - name: Build KOWX712 KernelSU LKM
         run: |
@@ -414,7 +414,7 @@ jobs:
           mkdir -p "$package"
           cp "$RUNNER_TEMP/kernelsu.ko" "$package/kernelsu.ko"
           cp "$RUNNER_TEMP/kernelsu_next.ko" "$package/kernelsu_next.ko"
-          cp "$RUNNER_TEMP/resukisu.ko" "$package/resukisu.ko"
+          cp "$RUNNER_TEMP/bakasu.ko" "$package/bakasu.ko"
           cp "$RUNNER_TEMP/kowx712.ko" "$package/kowx712.ko"
           cp "$RUNNER_TEMP/backslashxx.ko" "$package/backslashxx.ko"
           test -x "$CLANG_BIN/llvm-strip"
@@ -454,7 +454,7 @@ jobs:
             echo
             echo "- KernelSU: \`${KSU_COMMIT:0:12}\`"
             echo "- KernelSU-Next: \`${KSU_NEXT_COMMIT:0:12}\`"
-            echo "- ReSukiSU: \`${RESUKISU_COMMIT:0:12}\`"
+            echo "- BakaSU: \`${BAKASU_COMMIT:0:12}\`"
             echo "- KOWX712/KernelSU: \`${KOWX712_COMMIT:0:12}\`"
             echo "- backslashxx/KernelSU: \`${BACKSLASHXX_COMMIT:0:12}\`"
             echo "- backslashxx compatibility patch: \`${BACKSLASHXX_PATCH}\`"
@@ -479,8 +479,8 @@ jobs:
             --arg ksu_commit "$KSU_COMMIT" \
             --arg ksu_next_ref "$KSU_NEXT_REF" \
             --arg ksu_next_commit "$KSU_NEXT_COMMIT" \
-            --arg resukisu_ref "$RESUKISU_REF" \
-            --arg resukisu_commit "$RESUKISU_COMMIT" \
+            --arg bakasu_ref "$BAKASU_REF" \
+            --arg bakasu_commit "$BAKASU_COMMIT" \
             --arg kowx712_ref "$KOWX712_REF" \
             --arg kowx712_commit "$KOWX712_COMMIT" \
             --arg backslashxx_ref "$BACKSLASHXX_REF" \
@@ -488,8 +488,8 @@ jobs:
             --arg backslashxx_patch "$BACKSLASHXX_PATCH" \
             --arg backslashxx_worker_patch "$BACKSLASHXX_WORKER_PATCH" \
             --argjson backslashxx_branch_link "$BACKSLASHXX_BRANCH_LINK" \
-            --argjson variants '["kernelsu", "kernelsu_next", "resukisu", "kowx712", "backslashxx"]' \
-            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},resukisu:{ref:$resukisu_ref,commit:$resukisu_commit},kowx712:{ref:$kowx712_ref,commit:$kowx712_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit,branch_link_worker:$backslashxx_branch_link,patches:([$backslashxx_patch,$backslashxx_worker_patch] | map(select(length > 0)))}}, variants:$variants}' \
+            --argjson variants '["kernelsu", "kernelsu_next", "bakasu", "kowx712", "backslashxx"]' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},bakasu:{ref:$bakasu_ref,commit:$bakasu_commit},kowx712:{ref:$kowx712_ref,commit:$kowx712_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit,branch_link_worker:$backslashxx_branch_link,patches:([$backslashxx_patch,$backslashxx_worker_patch] | map(select(length > 0)))}}, variants:$variants}' \
             > "$package/manifest.json"
           cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
           printf 'Package contents:\n'

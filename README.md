@@ -4,7 +4,7 @@ This repository builds five loadable KernelSU modules against the YAAP OnePlus S
 
 - `kernelsu.ko`: official KernelSU
 - `kernelsu_next.ko`: KernelSU-Next
-- `resukisu.ko`: ReSukiSU
+- `bakasu.ko`: [BakaSU](https://github.com/Baka-SU/BakaSU)
 - `kowx712.ko`: `KOWX712/KernelSU`
 - `backslashxx.ko`: `backslashxx/KernelSU`
 
@@ -27,7 +27,7 @@ empty `__versions` section: YAAP's module loader rejects a module with no
 `__versions` section unless force-loading is enabled, while the KernelSU
 loaders relocate unresolved imports from kallsyms rather than providing CRCs.
 
-ReSukiSU is built with its tracepoint hook and with manual hook/SUSFS disabled. The YAAP source is not modified with the simonpunk SUSFS patch, so enabling ReSukiSU manual hook or SUSFS would not be a valid default for this tree.
+BakaSU is built with its tracepoint hook and with manual hook/SUSFS disabled. The YAAP source is not modified with the simonpunk SUSFS patch, so enabling BakaSU manual hook or SUSFS would not be a valid default for this tree.
 
 The modules repository is cloned from the latest `seventeen` revision for provenance. Its Android build metadata is not merged into the standalone kernel build; the LKM is compiled against the latest YAAP kernel tree and its exported symbols.
 
@@ -41,7 +41,7 @@ so this workflow checks out both trees with those exact names, builds YAAP first
 and only then builds each external LKM from the resulting headers and
 `Module.symvers`. This is required for YAAP's non-standard exported-symbol set.
 After building the YAAP kernel and its symbol table, the workflow prepares
-`modpost` for KernelSU's LKM loader. The official, Next, ReSukiSU, KOWX712,
+`modpost` for KernelSU's LKM loader. The official, Next, BakaSU, KOWX712,
 and backslashxx loaders resolve undefined kernel symbols from `/proc/kallsyms`
 before calling `init_module`; their modules therefore require an empty
 `__versions` section rather than CRC entries for imports. The workflow uses
@@ -64,7 +64,7 @@ commit, so each run uses the current tip of the selected YAAP and KernelSU
 branches. The workflow also applies a narrow compatibility fix for the current
 YAAP `certs/extract-cert.c` `key_pass` declaration bug. The other fixes address
 the toolchain `clang` directory mis-detection, the YAAP modules symlink, missing
-`modules_prepare`, and ReSukiSU's multi-manager tracepoint configuration. For
+`modules_prepare`, and BakaSU's multi-manager tracepoint configuration. For
 backslashxx/KernelSU, it also applies a versioned ARM64 sucompat fix: when
 branch-link scanning cannot find the YAAP 6.1 call site, the already-installed
 64-bit syscall-table fallback is retained instead of being unconditionally
@@ -72,7 +72,8 @@ restored. This allows `/system/bin/su` from 64-bit applications to reach
 `ksud` on the affected YAAP builds.
 
 Device comparisons report an `arm64CpuIdentity` mismatch with backslashxx,
-while KOWX712, ReSukiSU, and a boot without KernelSU show no mismatch. This
+while KOWX712, the previously built ReSukiSU variant, and a boot without
+KernelSU show no mismatch. BakaSU has not yet been tested in this comparison. This
 identifies backslashxx as the trigger; the responsible hook is still unknown.
 Set the workflow input `backslashxx_branch_link` to `false` to build a
 diagnostic variant that skips its optional ARM64 inline worker and retains

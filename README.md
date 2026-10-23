@@ -65,11 +65,16 @@ branches. The workflow also applies a narrow compatibility fix for the current
 YAAP `certs/extract-cert.c` `key_pass` declaration bug. The other fixes address
 the toolchain `clang` directory mis-detection, the YAAP modules symlink, missing
 `modules_prepare`, and BakaSU's multi-manager tracepoint configuration. For
-backslashxx/KernelSU, it also applies a versioned ARM64 sucompat fix: when
+backslashxx/KernelSU, older layouts receive a versioned ARM64 sucompat fix. If
 branch-link scanning cannot find the YAAP 6.1 call site, the already-installed
 64-bit syscall-table fallback is retained instead of being unconditionally
 restored. This allows `/system/bin/su` from 64-bit applications to reach
 `ksud` on the affected YAAP builds.
+Recent backslashxx revisions already protect each native/compat `execve` and
+`execveat` fallback separately. If the legacy patch no longer applies, the
+workflow verifies all ten upstream success guards before proceeding without
+it; unrecognized layouts still fail the build. Release notes and the manifest
+record whether fallback protection came from upstream or the local patch.
 
 Device comparisons report an `arm64CpuIdentity` mismatch with backslashxx,
 while KOWX712, the previously built ReSukiSU variant, and a boot without

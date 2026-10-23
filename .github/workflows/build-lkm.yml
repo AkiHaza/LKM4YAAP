@@ -67,6 +67,7 @@ jobs:
           test -f .github/workflows/build-lkm.yml
           test -s patches/backslashxx/0001-preserve-sucompat-syscall-fallback.patch
           test -s patches/backslashxx/0002-disable-arm64-branch-link-worker.patch
+          test -s scripts/check-backslashxx-fallback.py
           git diff --check
           printf 'Checked out repository: %s\n' "$(git rev-parse HEAD)"
           printf 'Patch SHA256: '
@@ -200,8 +201,19 @@ jobs:
           test -s "$patch_file"
           test -s "$worker_patch"
           test -s "$source_file"
-          git -C "$KSU_ROOT/backslashxx" apply --check "$patch_file"
-          git -C "$KSU_ROOT/backslashxx" apply --whitespace=error "$patch_file"
+          fallback_patch_name=""
+          if git -C "$KSU_ROOT/backslashxx" apply --check "$patch_file"; then
+            git -C "$KSU_ROOT/backslashxx" apply --whitespace=error "$patch_file"
+            grep -Fq 'int ret = -ENOENT;' "$source_file"
+            grep -Fq 'if (!ret) {' "$source_file"
+            fallback_patch_name="0001-preserve-sucompat-syscall-fallback"
+            fallback_status="patched"
+          else
+            # Upstream now restores each syscall only after its own inline
+            # patch succeeds. Verify that layout before skipping the old patch.
+            python3 "$GITHUB_WORKSPACE/scripts/check-backslashxx-fallback.py" "$source_file"
+            fallback_status="upstream"
+          fi
           worker_patch_name=""
           if [ "$BACKSLASHXX_BRANCH_LINK" = false ]; then
             git -C "$KSU_ROOT/backslashxx" apply --check "$worker_patch"
@@ -217,15 +229,17 @@ jobs:
             grep -Fq 'kthread_run(bl_hack_init_thread' "$source_file"
           fi
           git -C "$KSU_ROOT/backslashxx" diff --check
-          grep -Fq 'int ret = -ENOENT;' "$source_file"
-          grep -Fq 'if (!ret) {' "$source_file"
           {
-            echo "BACKSLASHXX_PATCH=0001-preserve-sucompat-syscall-fallback"
+            echo "BACKSLASHXX_PATCH=$fallback_patch_name"
+            echo "BACKSLASHXX_FALLBACK=$fallback_status"
             echo "BACKSLASHXX_WORKER_PATCH=$worker_patch_name"
             echo "BACKSLASHXX_BRANCH_LINK=$BACKSLASHXX_BRANCH_LINK"
           } >> "$GITHUB_ENV"
           {
-            echo "- backslashxx compatibility patch: \`0001-preserve-sucompat-syscall-fallback\`"
+            echo "- backslashxx sucompat fallback: $fallback_status"
+            if [ -n "$fallback_patch_name" ]; then
+              echo "- backslashxx compatibility patch: \`$fallback_patch_name\`"
+            fi
             echo "- backslashxx branch-link worker: $BACKSLASHXX_BRANCH_LINK"
             if [ -n "$worker_patch_name" ]; then
               echo "- backslashxx diagnostic patch: \`$worker_patch_name\`"
@@ -457,7 +471,10 @@ jobs:
             echo "- BakaSU: \`${BAKASU_COMMIT:0:12}\`"
             echo "- KOWX712/KernelSU: \`${KOWX712_COMMIT:0:12}\`"
             echo "- backslashxx/KernelSU: \`${BACKSLASHXX_COMMIT:0:12}\`"
-            echo "- backslashxx compatibility patch: \`${BACKSLASHXX_PATCH}\`"
+            echo "- backslashxx sucompat fallback: $BACKSLASHXX_FALLBACK"
+            if [ -n "$BACKSLASHXX_PATCH" ]; then
+              echo "- backslashxx compatibility patch: \`${BACKSLASHXX_PATCH}\`"
+            fi
             echo "- backslashxx branch-link worker: $BACKSLASHXX_BRANCH_LINK"
             if [ -n "$BACKSLASHXX_WORKER_PATCH" ]; then
               echo "- backslashxx diagnostic patch: \`${BACKSLASHXX_WORKER_PATCH}\`"
@@ -486,10 +503,11 @@ jobs:
             --arg backslashxx_ref "$BACKSLASHXX_REF" \
             --arg backslashxx_commit "$BACKSLASHXX_COMMIT" \
             --arg backslashxx_patch "$BACKSLASHXX_PATCH" \
+            --arg backslashxx_fallback "$BACKSLASHXX_FALLBACK" \
             --arg backslashxx_worker_patch "$BACKSLASHXX_WORKER_PATCH" \
             --argjson backslashxx_branch_link "$BACKSLASHXX_BRANCH_LINK" \
             --argjson variants '["kernelsu", "kernelsu_next", "bakasu", "kowx712", "backslashxx"]' \
-            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},bakasu:{ref:$bakasu_ref,commit:$bakasu_commit},kowx712:{ref:$kowx712_ref,commit:$kowx712_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit,branch_link_worker:$backslashxx_branch_link,patches:([$backslashxx_patch,$backslashxx_worker_patch] | map(select(length > 0)))}}, variants:$variants}' \
+            '{release_tag:$tag, kernel:{repo:$kernel_repo,ref:$kernel_ref,commit:$kernel_commit}, modules:{repo:$modules_repo,ref:$modules_ref,commit:$modules_commit}, toolchain:$toolchain, kernel_release:$kernel_release, module_sig_protect:$module_sig_protect, empty_lkm_versions:true, kallsyms_symbol_checks:true, debug_symbols_stripped:true, ksu:{official:{ref:$ksu_ref,commit:$ksu_commit},"next":{ref:$ksu_next_ref,commit:$ksu_next_commit},bakasu:{ref:$bakasu_ref,commit:$bakasu_commit},kowx712:{ref:$kowx712_ref,commit:$kowx712_commit},backslashxx:{ref:$backslashxx_ref,commit:$backslashxx_commit,sucompat_fallback:$backslashxx_fallback,branch_link_worker:$backslashxx_branch_link,patches:([$backslashxx_patch,$backslashxx_worker_patch] | map(select(length > 0)))}}, variants:$variants}' \
             > "$package/manifest.json"
           cp "$RUNNER_TEMP/yaap-config.txt" "$package/yaap-config.txt"
           printf 'Package contents:\n'

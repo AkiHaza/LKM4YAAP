@@ -8,7 +8,7 @@ This repository builds five loadable KernelSU modules against the YAAP OnePlus S
 - `kowx712.ko`: `KOWX712/KernelSU`
 - `backslashxx.ko`: `backslashxx/KernelSU`
 
-The workflow is `.github/workflows/build-lkm.yml`. Start it with **Actions -> Build YAAP KernelSU LKM -> Run workflow**. It follows the latest commits on the configured YAAP and KSU branches and uses the Floran clang-r596125 toolchain. The GitHub Release is titled **Frieren Kernel Release** and contains only the five debug-stripped `.ko` files; its notes show the YAAP kernel and each KernelSU fork's latest 12-character commit hash. The Actions artifact retains `manifest.json`, `SHA256SUMS` and the effective YAAP config for build diagnostics.
+The workflow is `.github/workflows/build-lkm.yml`. Start it with **Actions -> Build YAAP KernelSU LKM -> Run workflow**. It follows the latest commits on the configured YAAP and KSU branches and uses the Floran clang-r596125 toolchain. The YAAP kernel is compiled once in a shared job, then each KSU fork runs in its own matrix job with `fail-fast` disabled, so a broken fork does not cancel the other builds. The GitHub Release is titled **Frieren Kernel Release** and contains every debug-stripped `.ko` that completed successfully; its notes and manifest show the YAAP kernel and each included KernelSU fork's commit hash. The Actions artifact retains `manifest.json`, `SHA256SUMS` and the effective YAAP config for build diagnostics.
 
 ## Loading the module
 
